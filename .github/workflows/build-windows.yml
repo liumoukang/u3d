@@ -5,22 +5,25 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: 拉取ningfei/u3d源码
+      - name: 拉取源码
         uses: actions/checkout@v4
 
-      - name: 配置MSVC编译环境
+      - name: vcpkg 安装依赖 zlib libpng
+        uses: microsoft/vcpkg@v1
+        with:
+          triplet: x64-windows
+          packages: zlib libpng
+
+      - name: 加载MSVC编译环境
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: 修复u3d的CMake最低版本（解决旧版本警告）
+      - name: 修复CMakeLists版本顺序问题（cmake_minimum_required放到最顶部）
         run: |
-          (Get-Content CMakeLists.txt) -replace 'cmake_minimum_required\(VERSION 2\.8\)', 'cmake_minimum_required(VERSION 3.10)' | Set-Content CMakeLists.txt
+          $txt = Get-Content CMakeLists.txt -Raw
+          $txt = $txt -replace 'project\(u3d\)', "cmake_minimum_required(VERSION 3.10)`nproject(u3d)"
+          Set-Content CMakeLists.txt $txt
 
-      - name: 使用vcpkg自动安装依赖 zlib libpng
-        run: |
-          vcpkg install zlib:x64-windows libpng:x64-windows
-          vcpkg integrate install
-
-      - name: CMake配置u3d（x64 共享库 Release 静态CRT，自动使用vcpkg依赖）
+      - name: CMake配置
         run: |
           mkdir build
           cd build
@@ -28,23 +31,23 @@ jobs:
             -DU3D_SHARED=ON `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" `
-            -DCMAKE_TOOLCHAIN_FILE="C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\vcpkg\scripts\buildsystems\vcpkg.cmake"
+            -DCMAKE_TOOLCHAIN_FILE="${{ steps.vcpkg.outputs.vcpkg-toolchain-file }}"
 
-      - name: 编译u3d
+      - name: 编译
         run: |
           cd build
           cmake --build . --config Release
 
-      - name: 整理打包文件
+      - name: 收集产物
         run: |
           mkdir artifact
           copy build\Release\IDTFConverter.exe artifact\IDTFConverter_x64.exe
           copy build\Release\u3d.dll artifact\u3d.dll
-          copy C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\vcpkg\installed\x64-windows\bin\zlib1.dll artifact\zlib1.dll
-          copy C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\vcpkg\installed\x64-windows\bin\libpng16.dll artifact\libpng16.dll
+          copy ${{ steps.vcpkg.outputs.vcpkg-root }}\installed\x64-windows\bin\zlib1.dll artifact\zlib1.dll
+          copy ${{ steps.vcpkg.outputs.vcpkg-root }}\installed\x64-windows\bin\libpng16.dll artifact\libpng16.dll
 
-      - name: 上传成品包
+      - name: 上传成品
         uses: actions/upload-artifact@v4
         with:
-          name: u3d-x64-shared-release
+          name: u3d-x64-release
           path: artifact/
