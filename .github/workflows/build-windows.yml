@@ -11,20 +11,16 @@ jobs:
       - name: 配置MSVC编译环境
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: 修复u3d的CMake最低版本（解决cmake<3.5兼容报错）
+      - name: 修复u3d的CMake最低版本（解决旧版本警告）
         run: |
-          (Get-Content CMakeLists.txt) -replace 'cmake_minimum_required\(VERSION 2\.8\)', 'cmake_minimum_required(VERSION 3.5)' | Set-Content CMakeLists.txt
+          (Get-Content CMakeLists.txt) -replace 'cmake_minimum_required\(VERSION 2\.8\)', 'cmake_minimum_required(VERSION 3.10)' | Set-Content CMakeLists.txt
 
-      - name: 编译zlib依赖
+      - name: 使用vcpkg自动安装依赖 zlib libpng
         run: |
-          git clone https://github.com/madler/zlib.git
-          cd zlib
-          mkdir build_zlib
-          cd build_zlib
-          cmake .. -A x64 -DCMAKE_BUILD_TYPE=Release
-          cmake --build . --config Release
+          vcpkg install zlib:x64-windows libpng:x64-windows
+          vcpkg integrate install
 
-      - name: CMake配置u3d（x64 共享库 Release 静态CRT，指定zlib路径）
+      - name: CMake配置u3d（x64 共享库 Release 静态CRT，自动使用vcpkg依赖）
         run: |
           mkdir build
           cd build
@@ -32,8 +28,7 @@ jobs:
             -DU3D_SHARED=ON `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" `
-            -DZLIB_INCLUDE_DIR="${PWD}/../zlib" `
-            -DZLIB_LIBRARY="${PWD}/../zlib/build_zlib/Release/zlib.lib"
+            -DCMAKE_TOOLCHAIN_FILE="C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\vcpkg\scripts\buildsystems\vcpkg.cmake"
 
       - name: 编译u3d
         run: |
@@ -45,7 +40,8 @@ jobs:
           mkdir artifact
           copy build\Release\IDTFConverter.exe artifact\IDTFConverter_x64.exe
           copy build\Release\u3d.dll artifact\u3d.dll
-          copy zlib\build_zlib\Release\zlib1.dll artifact\zlib1.dll
+          copy C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\vcpkg\installed\x64-windows\bin\zlib1.dll artifact\zlib1.dll
+          copy C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\vcpkg\installed\x64-windows\bin\libpng16.dll artifact\libpng16.dll
 
       - name: 上传成品包
         uses: actions/upload-artifact@v4
