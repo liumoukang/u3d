@@ -1,6 +1,6 @@
 name: Build ningfei/u3d Windows x64 Shared Release
 on:
-  workflow_dispatch: # ✅ 手动一键触发编译
+  workflow_dispatch:
 jobs:
   build:
     runs-on: windows-latest
@@ -11,13 +11,31 @@ jobs:
       - name: 配置MSVC编译环境
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: CMake配置（x64 共享库 Release 静态CRT + 兼容旧cmake策略修复）
+      - name: 修复u3d的CMake最低版本（解决cmake<3.5兼容报错）
+        run: |
+          (Get-Content CMakeLists.txt) -replace 'cmake_minimum_required\(VERSION 2\.8\)', 'cmake_minimum_required(VERSION 3.5)' | Set-Content CMakeLists.txt
+
+      - name: 编译zlib依赖
+        run: |
+          git clone https://github.com/madler/zlib.git
+          cd zlib
+          mkdir build_zlib
+          cd build_zlib
+          cmake .. -A x64 -DCMAKE_BUILD_TYPE=Release
+          cmake --build . --config Release
+
+      - name: CMake配置u3d（x64 共享库 Release 静态CRT，指定zlib路径）
         run: |
           mkdir build
           cd build
-          cmake .. -A x64 -DU3D_SHARED=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          cmake .. -A x64 `
+            -DU3D_SHARED=ON `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" `
+            -DZLIB_INCLUDE_DIR="${PWD}/../zlib" `
+            -DZLIB_LIBRARY="${PWD}/../zlib/build_zlib/Release/zlib.lib"
 
-      - name: 编译
+      - name: 编译u3d
         run: |
           cd build
           cmake --build . --config Release
@@ -27,6 +45,7 @@ jobs:
           mkdir artifact
           copy build\Release\IDTFConverter.exe artifact\IDTFConverter_x64.exe
           copy build\Release\u3d.dll artifact\u3d.dll
+          copy zlib\build_zlib\Release\zlib1.dll artifact\zlib1.dll
 
       - name: 上传成品包
         uses: actions/upload-artifact@v4
