@@ -1,0 +1,35 @@
+name: Build ningfei/u3d Windows x64 Shared Release
+on:
+  workflow_dispatch: # ✅ 支持手动点击一键编译
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: 拉取ningfei/u3d源码
+        uses: actions/checkout@v4
+
+      - name: 配置MSVC编译环境
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: CMake配置（x64 共享库 Release 静态CRT）
+        run: |
+          mkdir build
+          cd build
+          cmake .. -A x64 -DU3D_SHARED=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded"
+
+      - name: 编译
+        run: |
+          cd build
+          cmake --build . --config Release
+
+      - name: 整理打包文件
+        run: |
+          mkdir artifact
+          copy build\Release\IDTFConverter.exe artifact\IDTFConverter_x64.exe
+          copy build\Release\u3d.dll artifact\u3d.dll
+
+      - name: 上传成品包（之后在这里下载）
+        uses: actions/upload-artifact@v4
+        with:
+          name: u3d-x64-shared-release
+          path: artifact/
