@@ -1,319 +1,53 @@
-#【改动‑编译交付】★ ningfei/u3d 64-bit Windows x64 Release 云端自动编译工作流
-# 目的：完全免本地编译环境（无需安装 Git/CMake/VS Build Tools），在 GitHub Actions Windows Runner 上
-#       直接拉取 ningfei/u3d 源码 → CMake + Ninja + MSVC 编译 x64 Release → 自动打包 IDTFConverter_x64 便携包。
-# 使用步骤：
-#   1. Fork 目标仓库（或在任意您有写权限的仓库），把本文件放到 .github/workflows/ 目录下提交；
-#   2. 进入 GitHub 仓库 → Actions 标签页 → 在左侧选择【Build ningfei/u3d Win x64 Release (Portable)】→ 点击 Run workflow（可自定义 git ref）；
-#   3. 等待 3~10 分钟完成，下载 Artifact：【ningfei-u3d-win-x64-release-portable】，里面有：
-#        - IDTFConverter_x64.exe + IFXCore.dll + IFXExporting.dll + IFXImporting.dll + IFXScheduling.dll（可直接覆盖原 32-bit Intel SDK 的 IDTFConverter.exe）
-#        - include/u3d/*.h（开发头文件）
-#        - lib/IFXCore.lib 等 import lib
-#        - README_DEPLOY.txt（内部替换路径说明）
-#   4. 若您 fork 的是 ningfei/u3d 原仓库，则本 workflow 在 commit/push 到默认分支时会自动触发。
-name: Build ningfei/u3d Win x64 Release (Portable)
-
-run-name: Build ningfei/u3d @ ${{ github.event.inputs.git_ref || 'master' }} — Win x64 Release Portable
-
+name: Build ningfei/u3d Windows x64 Shared Release
 on:
-  push:
-    # 如果您直接把本 workflow 提交到 ningfei/u3d 原仓库或其 fork，push 到 master 分支会自动触发
-    branches: [ master, main ]
-    paths:
-      - '.github/workflows/build_ningfei_u3d_win_x64_release.yml'
-      - '**/CMakeLists.txt'
-  pull_request:
-    branches: [ master, main ]
   workflow_dispatch:
-    inputs:
-      git_ref:
-        description: 'ningfei/u3d 仓库的 git ref（分支/tag/commit SHA）'
-        required: false
-        default: 'master'
-      u3d_shared:
-        description: 'U3D_SHARED（OFF=内置zlib/png/jpeg，便携分发推荐；ON=使用系统安装的zlib/png/jpeg）'
-        required: false
-        default: 'OFF'
-      install_prefix:
-        description: 'CMAKE_INSTALL_PREFIX（仅影响内部 stage 目录结构）'
-        required: false
-        default: 'stage/install'
-
-# 防止多 job 并发跑同一个 ref 产生冲突
-concurrency:
-  group: ningfei-u3d-win-x64-portable-${{ github.event.inputs.git_ref || 'master' }}
-  cancel-in-progress: true
-
-env:
-  REPO_URL: https://github.com/ningfei/u3d.git
-  SOURCE_DIR: ${{ github.workspace }}\ningfei-u3d-src
-  BUILD_DIR: ${{ github.workspace }}\ningfei-u3d-build
-  INSTALL_DIR: ${{ github.workspace }}\ningfei-u3d-stage\install
-  CMAKE_GENERATOR: 'Ninja'
-  CMAKE_BUILD_PARALLEL_LEVEL: '0'   # 0 = 使用所有 CPU 核心
-
 jobs:
-  build-win-x64-portable:
-    name: Build Windows x64 Release Portable
+  build:
     runs-on: windows-latest
-    # 依赖 GitHub 官方 Windows 镜像：内置 Visual Studio 2022 Build Tools（MSVC v143）、CMake、Ninja、Git、7z
-    # 完全零本地安装成本
-
     steps:
-      - name: Checkout workflow repository (optional, keep for reproducibility)
-        # 如果把 workflow 放在其它仓库而非 ningfei/u3d，这一步会拉取包含该 workflow 的仓库代码
-        # （用来保留 workflow 版本和自定义脚本）
+      - name: 拉取源码
         uses: actions/checkout@v4
+
+      - name: vcpkg 安装依赖 zlib libpng
+        uses: microsoft/vcpkg@v1
         with:
-          path: _workflow_repo
-          fetch-depth: 1
+          triplet: x64-windows
+          packages: zlib libpng
 
-      - name: Resolve git ref & print toolchain info
-        shell: pwsh
+      - name: 加载MSVC编译环境
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: 修复CMakeLists版本顺序问题（cmake_minimum_required放到最顶部）
         run: |
-          $ErrorActionPreference = 'Stop'
-          $gitRef = if ($env:GIT_REF_INPUT) { $env:GIT_REF_INPUT } else { 'master' }
-          Write-Host "= 目标仓库: $env:REPO_URL"
-          Write-Host "= Git ref : $gitRef"
-          Write-Host "= Git exe : $(Get-Command git | Select-Object -ExpandProperty Source)"
-          Write-Host "= CMake   : $(Get-Command cmake | Select-Object -ExpandProperty Source) ($(cmake --version | Select-Object -First 1))"
-          Write-Host "= Ninja   : $(Get-Command ninja | Select-Object -ExpandProperty Source) ($(ninja --version))"
-          Write-Host "= vswhere : $(Get-Command vswhere | Select-Object -ExpandProperty Source)"
-          # 探测 MSVC 环境（仅用于日志打印确认 MSVC v143 x64 可用）
-          $vsPath = & vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          Write-Host "= VS Install Path : $vsPath"
-          if (-not $vsPath) { throw "❌ 未找到含 MSVC x64 工具链的 Visual Studio Build Tools（Runner 镜像异常）。" }
-          "GIT_REF_RESOLVED=$gitRef" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-        env:
-          GIT_REF_INPUT: ${{ github.event.inputs.git_ref }}
+          $txt = Get-Content CMakeLists.txt -Raw
+          $txt = $txt -replace 'project\(u3d\)', "cmake_minimum_required(VERSION 3.10)`nproject(u3d)"
+          Set-Content CMakeLists.txt $txt
 
-      - name: Clone ningfei/u3d source
-        shell: pwsh
+      - name: CMake配置
         run: |
-          $ErrorActionPreference = 'Stop'
-          $gitRef = $env:GIT_REF_RESOLVED
-          Write-Host "👉 克隆 ningfei/u3d 仓库 (ref=$gitRef, depth=1) → $env:SOURCE_DIR"
-          git clone --depth=1 --branch $gitRef $env:REPO_URL $env:SOURCE_DIR 2>&1 | Out-Host
-          if ($LASTEXITCODE -ne 0) {
-            # 如果 ref 不是分支名（tag/SHA），--branch 会失败，fallback 到完整克隆后 checkout
-            Write-Host "⚠ --branch $gitRef 失败（可能是 tag/SHA），改为完整克隆后 checkout。"
-            Remove-Item -Recurse -Force $env:SOURCE_DIR -ErrorAction SilentlyContinue
-            git clone --depth=50 $env:REPO_URL $env:SOURCE_DIR 2>&1 | Out-Host
-            Push-Location $env:SOURCE_DIR
-            git checkout $gitRef 2>&1 | Out-Host
-            if ($LASTEXITCODE -ne 0) { throw "❌ checkout ref=$gitRef 失败。请检查输入的 git ref 是否合法。" }
-            Pop-Location
-          }
-          Push-Location $env:SOURCE_DIR
-          $shaShort = (git rev-parse --short HEAD).Trim()
-          Write-Host "✔ 源码 HEAD = $shaShort"
-          "SOURCE_SHA_SHORT=$shaShort" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Pop-Location
+          mkdir build
+          cd build
+          cmake .. -A x64 `
+            -DU3D_SHARED=ON `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" `
+            -DCMAKE_TOOLCHAIN_FILE="${{ steps.vcpkg.outputs.vcpkg-toolchain-file }}"
 
-      - name: Configure CMake (MSVC x64, Release, Ninja, portable U3D_SHARED=OFF)
-        shell: pwsh
+      - name: 编译
         run: |
-          $ErrorActionPreference = 'Stop'
-          #【改动‑编译交付】★ 用 MSVC 开发者 Powershell 环境自动导入 VS 2022 x64 工具链（避免手动 vcvarsall.bat）
-          Import-Module "$env:ProgramFiles\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\Microsoft.VisualStudio.DevShell.dll" -ErrorAction SilentlyContinue
-          # 社区版/专业版回退
-          if (-not (Get-Module -ListAvailable Microsoft.VisualStudio.DevShell)) {
-            $altPaths = @(
-              "$env:ProgramFiles\Microsoft Visual Studio\2022\Community\Common7\Tools\Microsoft.VisualStudio.DevShell.dll",
-              "$env:ProgramFiles\Microsoft Visual Studio\2022\Professional\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
-            )
-            foreach ($p in $altPaths) {
-              if (Test-Path $p) { Import-Module $p; break }
-            }
-          }
-          if (-not (Get-Command Enter-VsDevShell -ErrorAction SilentlyContinue)) {
-            throw "❌ 未找到 Enter-VsDevShell。Runner 镜像异常。"
-          }
-          # 用 -SkipAutomaticLocation 避免 Enter-VsDevShell 自动 cd ~/Source
-          Enter-VsDevShell -VsInstallPath (& vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath) `
-                           -DevCmdArguments '-arch=x64 -host_arch=x64' -SkipAutomaticLocation | Out-Null
-          Write-Host "✔ MSVC x64 工具链就绪（cl.exe 版本）："
-          cl 2>&1 | Select-Object -First 2
-          # --- 准备目录 ---
-          New-Item -ItemType Directory -Force -Path $env:BUILD_DIR | Out-Null
-          New-Item -ItemType Directory -Force -Path $env:INSTALL_DIR | Out-Null
-          $u3dShared = if ($env:U3D_SHARED_INPUT) { $env:U3D_SHARED_INPUT } else { 'OFF' }
-          Write-Host "👉 CMake Configure：GENERATOR=$env:CMAKE_GENERATOR  TYPE=Release  U3D_SHARED=$u3dShared"
-          Write-Host "   SOURCE   = $env:SOURCE_DIR"
-          Write-Host "   BUILD    = $env:BUILD_DIR"
-          Write-Host "   INSTALL  = $env:INSTALL_DIR"
-          #【改动‑编译交付】★ CMake 参数：
-          #   -U3D_SHARED=OFF: 编译内置 zlib/png/jpeg（避免 find_package 依赖系统安装），便携分发最稳定
-          #   -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded: /MT 静态链接 CRT，减少 VC++ 运行时依赖
-          #   -DCMAKE_INSTALL_PREFIX: 内部 stage 目录，最后再统一打包
-          cmake -S $env:SOURCE_DIR -B $env:BUILD_DIR -G $env:CMAKE_GENERATOR `
-                -DCMAKE_BUILD_TYPE=Release `
-                -DU3D_SHARED:BOOL=$u3dShared `
-                -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
-                -DCMAKE_INSTALL_PREFIX=$env:INSTALL_DIR 2>&1 | Out-Host
-          if ($LASTEXITCODE -ne 0) { throw "❌ CMake Configure 失败。上方日志包含详细错误。" }
-        env:
-          U3D_SHARED_INPUT: ${{ github.event.inputs.u3d_shared }}
+          cd build
+          cmake --build . --config Release
 
-      - name: Build with Ninja
-        shell: pwsh
+      - name: 收集产物
         run: |
-          $ErrorActionPreference = 'Stop'
-          # 再次进入 DevShell
-          $vsPath = & vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          Import-Module (Get-ChildItem $vsPath -Recurse -Filter Microsoft.VisualStudio.DevShell.dll | Select-Object -First 1 -ExpandProperty FullName)
-          Enter-VsDevShell -VsInstallPath $vsPath -DevCmdArguments '-arch=x64 -host_arch=x64' -SkipAutomaticLocation | Out-Null
-          Write-Host "👉 编译（并行，使用所有核心）：cmake --build $env:BUILD_DIR --config Release"
-          cmake --build $env:BUILD_DIR --config Release 2>&1 | Out-Host
-          if ($LASTEXITCODE -ne 0) { throw "❌ 编译失败。上方日志包含详细错误。" }
-          Write-Host "✔ 编译完成。"
+          mkdir artifact
+          copy build\Release\IDTFConverter.exe artifact\IDTFConverter_x64.exe
+          copy build\Release\u3d.dll artifact\u3d.dll
+          copy ${{ steps.vcpkg.outputs.vcpkg-root }}\installed\x64-windows\bin\zlib1.dll artifact\zlib1.dll
+          copy ${{ steps.vcpkg.outputs.vcpkg-root }}\installed\x64-windows\bin\libpng16.dll artifact\libpng16.dll
 
-      - name: Install (stage) + rename IDTFConverter → IDTFConverter_x64
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          # 再次进入 DevShell
-          $vsPath = & vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          Import-Module (Get-ChildItem $vsPath -Recurse -Filter Microsoft.VisualStudio.DevShell.dll | Select-Object -First 1 -ExpandProperty FullName)
-          Enter-VsDevShell -VsInstallPath $vsPath -DevCmdArguments '-arch=x64 -host_arch=x64' -SkipAutomaticLocation | Out-Null
-          Write-Host "👉 安装到 staging：cmake --install $env:BUILD_DIR --config Release"
-          cmake --install $env:BUILD_DIR --config Release 2>&1 | Out-Host
-          if ($LASTEXITCODE -ne 0) { throw "❌ CMake install 失败。" }
-          # --- 定位 install 产物并按用户约束重命名 IDTFConverter.exe → IDTFConverter_x64.exe ---
-          $installBin = Join-Path $env:INSTALL_DIR 'bin'
-          $installLib = Join-Path $env:INSTALL_DIR 'lib'
-          if (-not (Test-Path $installBin)) {
-            # 某些 CMake 版本在 U3D_SHARED=OFF 时会把输出放到 u3d/ 子目录（见顶层 CMake L89-L94）
-            $installBin = Join-Path $env:INSTALL_DIR 'u3d'
-            $installLib = $installBin
-          }
-          Write-Host "= install bin 目录: $installBin"
-          Write-Host "= install lib 目录: $installLib"
-          if (-not (Test-Path $installBin)) { throw "❌ install bin/u3d 目录不存在，CMake install 产物路径异常。" }
-          # --- 制作便携包目录结构：ningfei-u3d-win-x64-portable ---
-          $packageRoot = Join-Path $github.workspace 'ningfei-u3d-win-x64-portable'
-          $packageBin = Join-Path $packageRoot 'IDTFConverter_x64'
-          $packageDev = Join-Path $packageRoot 'dev'
-          New-Item -ItemType Directory -Force -Path $packageBin | Out-Null
-          New-Item -ItemType Directory -Force -Path (Join-Path $packageDev 'include') | Out-Null
-          New-Item -ItemType Directory -Force -Path (Join-Path $packageDev 'lib') | Out-Null
-          # --- IDTFConverter_x64 + 必需运行时 DLL ---
-          $convName = 'IDTFConverter.exe'
-          $convSrc = Join-Path $installBin $convName
-          if (Test-Path $convSrc) {
-            Copy-Item $convSrc (Join-Path $packageBin 'IDTFConverter_x64.exe') -Force
-            Write-Host "✔ 复制并重命名: $convName → IDTFConverter_x64.exe"
-          } else {
-            Write-Host "⚠ 警告：install bin 下未找到 $convName（可能在 build 根目录？），尝试扫描..."
-            $found = Get-ChildItem $env:BUILD_DIR -Recurse -Filter IDTFConverter.exe | Select-Object -First 1
-            if ($found) {
-              Copy-Item $found.FullName (Join-Path $packageBin 'IDTFConverter_x64.exe') -Force
-              Write-Host "✔ 从 build 目录复制并重命名: $($found.FullName) → IDTFConverter_x64.exe"
-            } else {
-              throw "❌ 未找到 IDTFConverter.exe 最终产物。请检查 build log。"
-            }
-          }
-          # 复制运行必需的所有共享 DLL（IFXCore/IFXExporting/IFXImporting/IFXScheduling 等）
-          $dllsCopied = @()
-          foreach ($dll in Get-ChildItem $installBin -Filter *.dll) {
-            Copy-Item $dll.FullName (Join-Path $packageBin $dll.Name) -Force
-            $dllsCopied += $dll.Name
-          }
-          # installBin 没有的话从 build 目录再扫一次（CMake install 可能没有 copy 全部）
-          foreach ($dll in Get-ChildItem $env:BUILD_DIR -Recurse -Filter *.dll) {
-            $dst = Join-Path $packageBin $dll.Name
-            if (-not (Test-Path $dst)) { Copy-Item $dll.FullName $dst -Force; $dllsCopied += $dll.Name }
-          }
-          Write-Host "✔ 复制运行时 DLL ($($dllsCopied.Count) 个): $($dllsCopied -join ', ')"
-          # --- 开发头文件 & import lib（可选，方便同源编译 io_u3d.dll） ---
-          $includeSrc = Join-Path $env:INSTALL_DIR 'include\u3d'
-          if (-not (Test-Path $includeSrc)) { $includeSrc = Join-Path $installLib 'include' }
-          if (Test-Path $includeSrc) {
-            Copy-Item -Recurse -Force $includeSrc (Join-Path $packageDev 'include\u3d')
-            Write-Host "✔ 复制开发头文件: $includeSrc → dev/include/u3d"
-          }
-          foreach ($lib in Get-ChildItem $installLib -Filter *.lib -ErrorAction SilentlyContinue) {
-            Copy-Item $lib.FullName (Join-Path $packageDev "lib\$($lib.Name)") -Force
-          }
-          Write-Host "✔ 复制 import libs: $(Get-ChildItem (Join-Path $packageDev 'lib') -Filter *.lib | Measure-Object | Select-Object -ExpandProperty Count) 个"
-          # --- 部署说明 + README_DEPLOY.txt ---
-          $readme = @'
-# ningfei/u3d Windows x64 Release 便携部署包 (IDTFConverter_x64)
-
-本文件由 GitHub Actions 云端自动编译产出（见 .github/workflows/build_ningfei_u3d_win_x64_release.yml），
-100% 源码编译，无本地编译环境依赖。
-
-## 产物说明
-
-- IDTFConverter_x64/
-    ├─ IDTFConverter_x64.exe      （原 IDTFConverter.exe 重命名，64-bit ningfei/u3d）
-    ├─ IFXCore.dll                （核心动态库，必需）
-    ├─ IFXExporting.dll           （导出组件，必需）
-    ├─ IFXImporting.dll           （导入组件，必需）
-    ├─ IFXScheduling.dll          （调度组件，必需）
-    └─ 其它*.dll                  （运行时依赖，一起部署即可）
-- dev/
-    ├─ include/u3d/*.h            （开发头文件，同源编译 MeshLab io_u3d.dll 时需要）
-    └─ lib/*.lib                  （import lib，链接用）
-
-## 替换旧版 32-bit Intel IDTFConverter
-
-**三维PDF生成器目录通常为：**
-  `三维PDF生成器\Tools\IDTFConverter_x64\`   （如存在，则直接覆盖此目录内所有文件）
-  或
-  `三维PDF生成器\Tools\IDTFConverter\`       （只有 32-bit Intel 原版时，复制到同级新目录 IDTFConverter_x64 下）
-
-步骤：
-1. 先备份原 Tools\IDTFConverter_x64 目录（如果存在）；
-2. 把本便携包 IDTFConverter_x64 目录下的所有文件（exe+dll）复制到目标 Tools\IDTFConverter_x64\ 目录；
-3. 启动程序，UI 日志首段会打印「IDTFConverter_x64 5件套齐全 = True」，表示部署成功。
-
-## 同源编译 MeshLab io_u3d.dll（修复 0xC0000005 崩溃）
-
-1. 获取 MeshLab 源码（meshlab/src/plugins/extra/io_u3d/ 为插件源码）；
-2. 使用同一份 Visual Studio 2022 v143 工具链；
-3. CMake 指定 U3D include 到本包的 dev/include/u3d，链接 dev/lib/IFXCore.lib（等）；
-4. 产出的 io_u3d.dll 替换：
-   - PyMeshLab:  %PYTHON_SITE_PACKAGES%\pymeshlab\lib\meshlab\plugins\io_u3d.dll
-   - meshlabserver:  <meshlab 安装目录>\plugins\io_u3d.dll
-'@
-          Set-Content -Path (Join-Path $packageRoot 'README_DEPLOY.txt') -Value $readme -Encoding UTF8
-          Write-Host "✔ 写入 README_DEPLOY.txt"
-          # --- 写 SHA 与时间戳文件，便于追溯 ---
-          Set-Content -Path (Join-Path $packageRoot 'BUILD_INFO.txt') -Value @"
-SOURCE_REPO=https://github.com/ningfei/u3d.git
-SOURCE_REF=$($env:GIT_REF_RESOLVED)
-SOURCE_SHA=$($env:SOURCE_SHA_SHORT)
-BUILD_CONFIG=Release (x64 MSVC /MT)
-U3D_SHARED=$($env:U3D_SHARED_INPUT)
-BUILD_TIME=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss K')
-BUILD_RUNNER=windows-latest (GitHub Actions)
-"@ -Encoding UTF8
-          $env:PACKAGE_ROOT = $packageRoot
-          "PACKAGE_ROOT=$packageRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Upload Portable Package Artifact
+      - name: 上传成品
         uses: actions/upload-artifact@v4
         with:
-          name: ningfei-u3d-win-x64-release-portable
-          # GitHub Actions 的 artifact 会自动打包成 zip
-          path: |
-            ${{ env.PACKAGE_ROOT }}/**
-          retention-days: 90
-          compression-level: 6
-
-      - name: Summary (artifact link preview)
-        shell: pwsh
-        run: |
-          $pkg = $env:PACKAGE_ROOT
-          Write-Host "## ✔ ningfei/u3d Win x64 Release 便携包已产出"
-          Write-Host ""
-          Write-Host "打包目录: $pkg"
-          $tree = Get-ChildItem -Recurse $pkg | ForEach-Object {
-            $rel = $_.FullName.Substring($pkg.Length + 1)
-            $sz = if ($_.PSIsContainer) { '<DIR>' } else { '{0,8} bytes' -f $_.Length }
-            "  {0,-64} {1}" -f $rel, $sz
-          }
-          $tree | ForEach-Object { Write-Host $_ }
-          Write-Host ""
-          Write-Host "Artifact 名称: **ningfei-u3d-win-x64-release-portable**"
-          Write-Host "点击 Actions → 当前 run 页 → Artifacts 区域下载 zip，解压后即可使用。"
+          name: u3d-x64-release
+          path: artifact/
